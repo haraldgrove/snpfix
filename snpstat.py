@@ -21,7 +21,7 @@ class SNP(object):
         self.ia = ia
 
     def tbasea(self,a,mark):
-        m1 = self.mark[mark]['allelels'][0]
+        m1 = self.mark[mark]['alleles'][0]
         m2 = self.mark[mark]['alleles'][1]
         if a == 1: return m1+m2
         if a == 0: return m1+m1
@@ -30,19 +30,22 @@ class SNP(object):
 
     def tbase012(self,a,mark):
         try:
-            m1 = self.mark[mark]['allelels'][0]
+            m1 = self.mark[mark]['alleles'][0]
         except IndexError:
-            if a[0] != a[1]: self.mark[mark]['allelels'] = a
-            elif a[0] != '0': self.mark[mark]['allelels'].append(a[0])
+            if a[0] != a[1]: self.mark[mark]['alleles'] = [a[0],a[1]]
+            elif a[0] != '0': self.mark[mark]['alleles'].append(a[0])
             m1 = a[0]
         try:
             m2 = self.mark[mark]['alleles'][1]
         except IndexError:
-            if a[0] != '0' and a[0] != m1: self.mark[mark]['allelels'].append(a[0])
-            m2 = 'X'
-        if a[0] != a[1]: return 1
-        if a[0] == m1: return 0
-        if a[0] == m2: return 2
+            if a[0] != '0' and a[0] != m1:
+                self.mark[mark]['alleles'].append(a[0])
+                m2 = a[0]
+            else:
+                m2 = 'X'
+        if a[0] != a[1]: return '1'
+        if a[0] == m1: return '0'
+        if a[0] == m2: return '2'
         return np.nan
 
     def readGenos(self,genofile):
@@ -65,11 +68,13 @@ class SNP(object):
                         a = l[i+self.ic]
                     elif self.ia == 2: 
                         a = self.tbase012(l[i+self.ic],mark)
+                    elif self.ia == 3:
+                        a = self.tbase012(l[i*2+self.ic]+l[i*2+1+self.ic],mark)
                     if a not in ['0','1','2']: a = np.nan
                     else: a = int(a)
                     self.gen[irow,icol] = a
 
-    def readPedigree(self,pedfile):
+    def readPedigree(self,pedfile,real=True):
         """ First 3 columns: name,father,mother """
         with open(pedfile,'r') as fin:
             count = 0
@@ -78,8 +83,8 @@ class SNP(object):
                 l = line.strip().split()
                 name,father,mother = '0','0','0'
                 if len(l) > 0: name = l[0]
-                if self.ic > 1 and len(l) > 1: father = l[1]
-                if self.ic > 2 and len(l) > 2: mother = l[2]
+                if (real or self.ic > 1) and len(l) > 1: father = l[1]
+                if (real or self.ic > 2) and len(l) > 2: mother = l[2]
                 if name == '0': continue
                 if name not in self.ped:
                     self.ped[name] = {'father':father,
@@ -172,7 +177,7 @@ class SNP(object):
             wrongT = res==1
         except KeyError:
             wrongT = []
-        return np.logical_or(np.logical_or(wrongP,wrongM),wrongT)
+        return np.logical_or(np.logical_or(wrongP,wrongM),wrongT),wrongP,wrongM,wrongT
 
     def correctMendel(self):
         self.gen -= 1
@@ -181,15 +186,20 @@ class SNP(object):
         for child in self.pedlist:
             father = self.ped[child]['father']
             mother = self.ped[child]['mother']
-            index = self.findDiscords(child,father,mother)
-            self.disc[self.ped[child]['rank'],index] = 1
-        self.gen[self.disc==1] = np.nan
+            index,indP,indM,indT = self.findDiscords(child,father,mother)
+            self.disc[self.ped[child]['rank'],index] += 1
+            if father in self.ped:
+                self.disc[self.ped[father]['rank'],indP] += 1
+            if mother in self.ped:
+                self.disc[self.ped[mother]['rank'],indM] += 1
+        self.gen[self.disc>0] = np.nan
         self.gen += 1
 
     def calcMAF(self,maffile):
         with open(maffile,'w') as fout:
-            fout.write('#SNP\tMAF\ta0\ta1\ta2\tan\terr\n')
-            for i,n in enumerate(self.marklist):
+            fout.write('#SNP\tMAF\ta0\ta1\ta2\tan\terr\tadjErr\n')
+            for n in self.marklist:
+                i = self.mark[n]['rank']
                 d = self.gen[:,i]
                 ind = np.isfinite(d)
                 try:
@@ -198,9 +208,31 @@ class SNP(object):
                     MAF = np.nan
                 a0,a1,a2,an = len(d[d==0]),len(d[d==1]),len(d[d==2]),len(d[np.isnan(d)])
                 if MAF>0.5: MAF = 1-MAF
-                err = sum(self.disc[:,i])/(len(d[ind])+sum(self.disc[:,i]))
-                fout.write('%s\t%.5f\t%d\t%d\t%d\t%d\t%.3f\n' % (n,MAF,a0,a1,a2,an,err))
-                sys.stdout.write('%s\t%.5f\t%d\t%d\t%d\t%d\t%.3f\n' % (n,MAF,a0,a1,a2,an,err))
+                if len(d[ind]) > 0:
+                    err = sum(self.disc[:,i])/(len(d[ind])+sum(self.disc[:,i]))
+                else:
+                    err = 0
+                if MAF > 0:
+                    relerr = err / (MAF+MAF+MAF*MAF)
+                else:
+                    relerr = err
+                fout.write('%s\t%.5f\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n' % (n,MAF,a0,a1,a2,an,err,relerr))
+
+    def calcDist(self,maffile):
+        with open(maffile,'a') as fout:
+            fout.write('#Sample\tx\ta0\ta1\ta2\tan\terr\tadjErr\n')
+            for n in self.pedlist:
+                i = self.ped[n]['rank']
+                d = self.gen[i,:]
+                ind = np.isfinite(d)
+                a0,a1,a2,an = len(d[d==0]),len(d[d==1]),len(d[d==2]),len(d[np.isnan(d)])
+                if len(d[ind]) > 0:
+                    err = sum(self.disc[i,:])/(len(d[ind])+sum(self.disc[i,:]))
+                else:
+                    err = 0
+                MAF = 0
+                relerr = err
+                fout.write('%s\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n' % (n,MAF,a0,a1,a2,an,err,relerr))
 
     def writeGeno(self,outfile):
         def trans(a):
@@ -209,7 +241,6 @@ class SNP(object):
             if a == 2: return '2'
             return '-1'
         
-        print(self.gen)
         with open(outfile,'w') as fout:
             fout.write('#\t%s\n' % '\t'.join(self.marklist))
             for child in self.pedlist:
@@ -237,7 +268,7 @@ def main():
     if args.pedigreefile:
         gen.readPedigree(args.pedigreefile)
     else:
-        gen.readPedigree(args.ingeno)
+        gen.readPedigree(args.ingeno,False)
     # Collect marker information
     if args.markerfile:
         gen.readMarkers(args.markerfile)
@@ -246,6 +277,7 @@ def main():
     gen.readGenos(args.ingeno)
     gen.correctMendel()
     gen.calcMAF(args.repfile)
+    gen.calcDist(args.repfile)
     gen.writeGeno(args.outgeno)
     
 
