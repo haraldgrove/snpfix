@@ -52,18 +52,14 @@ class SNP(object):
         self.gen = np.zeros((len(self.ped),len(self.mark)))
         self.gen[:] = np.nan
         with open(genofile,'r') as fin:
-            header = False
             for line in fin:
-                if line.startswith('#') and not header:
-                    marklist = line.strip('#').strip().split()
-                    header = True
-                    continue
+                if line.startswith('#'): continue
                 l = line.strip().split()
                 if len(l) < 1: continue
                 irow = self.ped[l[0]]['rank']
-                for i,mark  in enumerate(marklist):
+                for i,mark  in enumerate(self.marklist):
                     if mark not in self.mark: continue
-                    icol = self.mark[marklist[i]]['rank']
+                    icol = self.mark[self.marklist[i]]['rank']
                     if self.ia == 1:
                         a = l[i+self.ic]
                     elif self.ia == 2: 
@@ -145,16 +141,23 @@ class SNP(object):
                                        'alleles': [],
                                        'rank':i}
                         self.marklist.append(e)
-                break
+                    break
             else:
                 l = line.strip().split()
-                for i,e in enumerate(l[self.ic:]):
-                    self.mark[str(i)] = {'chrom':'0',
-                                       'pos':i,
-                                       'alleles': [],
-                                       'rank':i}
-                    count += 1
-                    self.marklist.append(str(i))
+                if self.ia == 3:
+                    for i in xrange(0,len(l[self.ic:])//2):
+                        self.mark[str(i)] = {'chrom':'0',
+                                           'pos':i,
+                                           'alleles': [],
+                                           'rank':i}
+                        self.marklist.append(str(i))
+                else:
+                    for i,e in enumerate(l[self.ic:]):
+                        self.mark[str(i)] = {'chrom':'0',
+                                           'pos':i,
+                                           'alleles': [],
+                                           'rank':i}
+                        self.marklist.append(str(i))
 
 #*****************************************************************************************************
 
@@ -234,24 +237,42 @@ class SNP(object):
                 relerr = err
                 fout.write('%s\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n' % (n,MAF,a0,a1,a2,an,err,relerr))
 
-    def writeGeno(self,outfile):
-        def trans(a):
+    def writeGeno(self,infile,outfile):
+        def trans1(a):
             if a == 0: return '0'
             if a == 1: return '1'
             if a == 2: return '2'
             return '-1'
+
+        def trans2(a,m):
+            if a == 0: return m[0]+m[0]
+            if a == 1: return m[0]+m[1]
+            if a == 2: return m[1]+m[1]
+            return '00'
+
+        def trans3(a,m):
+            if a == 0: return m[0]+'\t'+m[0]
+            if a == 1: return m[0]+'\t'+m[1]
+            if a == 2: return m[1]+'\t'+m[1]
+            return '0\t0'
         
-        with open(outfile,'w') as fout:
-            fout.write('#\t%s\n' % '\t'.join(self.marklist))
-            for child in self.pedlist:
-                fout.write('%s' % child)
-                if self.ic > 1:
-                    father = self.ped[child]['father']
-                    fout.write('\t%s' % father)
-                if self.ic > 2:
-                    mother = self.ped[child]['mother']
-                    fout.write('\t%s' % mother)
-                fout.write('\t%s\n' % '\t'.join([trans(g) for g in self.gen[self.ped[child]['rank'],:]]))
+        with open(infile,'r') as fin:
+            fout = open(outfile,'w')
+            mlist = [''.join(self.mark[m]['alleles']) for m in self.marklist]
+            for line in fin:
+                if line.startswith('#'):
+                    fout.write(line)
+                    continue
+                l = line.strip().split()
+                fout.write('%s' % '\t'.join(l[0:self.ic]))
+                child = l[0]
+                if self.ia == 1:
+                    fout.write('\t%s\n' % '\t'.join([trans1(g) for g in self.gen[self.ped[child]['rank'],:]]))
+                elif self.ia == 2:
+                    fout.write('\t%s\n' % '\t'.join([trans2(g,mark) for g,mark in zip(self.gen[self.ped[child]['rank'],:],mlist)]))
+                elif self.ia == 3:
+                    fout.write('\t%s\n' % '\t'.join([trans3(g,mark) for g,mark in zip(self.gen[self.ped[child]['rank'],:],mlist)]))
+            fout.close()
 
 def main():
     parser = argparse.ArgumentParser(description='Processes genotypes.')
@@ -261,7 +282,7 @@ def main():
     parser.add_argument('-p','--pedigree',dest='pedigreefile',help='Pedigree file')
     parser.add_argument('-m','--markers',dest='markerfile',help='Marker file')
     parser.add_argument('-c',dest='infocol',type=int,help='Non-genotype columns', default=1)
-    parser.add_argument('-a',dest='allele',type=int,help='Alleleformat', default=1)
+    parser.add_argument('-a',dest='allele',type=int,help='Alleleformat, 1=0/1/2, 2=11/13/33, 3=1 1/1 3/3 3(plink)', default=1)
     parser.add_argument('-v','--verbose',help='Prints runtime info')
     args = parser.parse_args()
     gen = SNP(args.infocol,args.allele)
@@ -278,7 +299,7 @@ def main():
     gen.correctMendel()
     gen.calcMAF(args.repfile)
     gen.calcDist(args.repfile)
-    gen.writeGeno(args.outgeno)
+    gen.writeGeno(args.ingeno, args.outgeno)
     
 
 if __name__ == '__main__':
