@@ -167,19 +167,19 @@ class SNP(object):
             res = self.gen[self.ped[sire]['rank'],:]*self.gen[self.ped[anim]['rank'],:]
             wrongP = res==-1
         except KeyError:
-            wrongP = []
+            wrongP = [False]*len(self.mark)
         # Mother
         try:
             res = self.gen[self.ped[dam]['rank'],:]*self.gen[self.ped[anim]['rank'],:]
             wrongM = res==-1
         except KeyError:
-            wrongM = []
+            wrongM = [False]*len(self.mark)
         # Trios
         try:
             res = self.gen[self.ped[sire]['rank'],:]*self.gen[self.ped[dam]['rank'],:] - (self.gen[self.ped[anim]['rank'],:]*self.gen[self.ped[anim]['rank'],:])
             wrongT = res==1
         except KeyError:
-            wrongT = []
+            wrongT = [False]*len(self.mark)
         return np.logical_or(np.logical_or(wrongP,wrongM),wrongT),wrongP,wrongM,wrongT
 
     def correctMendel(self):
