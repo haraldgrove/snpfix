@@ -51,8 +51,11 @@ class SNP(object):
             m1 = self.mark[mark]['alleles'][0]
         except IndexError:
             if a[0] != a[1]: self.mark[mark]['alleles'] = [a[0],a[1]]
-            elif a[0] != '0': self.mark[mark]['alleles'].append(a[0])
-            m1 = a[0]
+            elif a[0] != '0':
+                self.mark[mark]['alleles'].append(a[0])
+                m1 = a[0]
+            else:
+                m1 = 'X'
         try:
             m2 = self.mark[mark]['alleles'][1]
         except IndexError:
@@ -85,7 +88,7 @@ class SNP(object):
                 if line.startswith('#'): continue
                 l = line.strip().split()
                 if len(l) < 1: continue
-                irow = self.ped[l[0]]['rank']
+                irow = self.ped[l[self.nc]]['rank']
                 for i,mark  in enumerate(self.marklist):
                     if mark not in self.mark: continue
                     icol = self.mark[self.marklist[i]]['rank']
