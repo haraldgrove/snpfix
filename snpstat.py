@@ -50,7 +50,9 @@ class SNP(object):
         try:
             m1 = self.mark[mark]['alleles'][0]
         except IndexError:
-            if a[0] != a[1]: self.mark[mark]['alleles'] = [a[0],a[1]]
+            if a[0] != a[1]:
+                self.mark[mark]['alleles'] = [a[0],a[1]]
+                m1 = a[0]
             elif a[0] != '0':
                 self.mark[mark]['alleles'].append(a[0])
                 m1 = a[0]
