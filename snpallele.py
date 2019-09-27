@@ -57,6 +57,7 @@ class SNP(object):
         self.gen = np.zeros((len(self.ped),len(self.mark)))
         self.gen[:] = np.nan
         maf = {}
+        mlist = self.marklist
         with open(genofile,'r') as fin:
             for line in fin:
                 if line.startswith('#'):

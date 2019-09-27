@@ -1,11 +1,18 @@
 #!/usr/bin/env python
 
-# snpstat, version 1.0, 2014-03-14
-
-from __future__ import division, print_function
 import sys
 import argparse
 import numpy as np
+import gzip
+import random
+import time
+
+PUNNETT = {'00': np.array([1.0,0.0,0.0]),
+               '01': np.array([0.5,0.5,0.0]),
+               '02': np.array([0.0,1.0,0.0]),
+               '11': np.array([0.25,0.5,0.25]),
+               '12': np.array([0.0,0.5,0.5]),
+               '22': np.array([0.0,0.0,1.0])}
 
 class SNP(object):
 
@@ -47,7 +54,6 @@ class SNP(object):
 
     def tbase012(self,a,mark):
         # Transform from 1/2/3/4 to 0/1/2
-        if len(a) == 1: a = a+a
         try:
             m1 = self.mark[mark]['alleles'][0]
         except IndexError:
@@ -75,7 +81,8 @@ class SNP(object):
         if a[0] == m1: return '0'
         if a[0] == m2: return '2'
         if a[0] != '0':
-            raise Exception('ERROR: Marker %s has more than 2 alleles\n%s\t%s%s\n' % (mark,a,m1,m2))
+            sys.stderr.write('ERROR: Marker %s has more than 2 alleles\n' % mark)
+            sys.stderr.write('%s\t%s\t%s%s\n' % (a,mark,m1,m2))
         return np.nan
 
     def readGenos(self,genofile):
@@ -88,23 +95,23 @@ class SNP(object):
         """
         self.gen = np.zeros((len(self.ped),len(self.mark)))
         self.gen[:] = np.nan
-        mlist = self.marklist
+        marklist = None
         with open(genofile,'r') as fin:
             for line in fin:
                 if line.startswith('#'):
-                    mlist = line.strip('#').strip().split()
+                    if not marklist: marklist = line.strip('#').strip().split()
                     continue
                 l = line.strip().split()
                 if len(l) < 1: continue
                 try: irow = self.ped[l[self.nc]]['rank']
                 except KeyError:
                     continue
-                for i,mark  in enumerate(mlist):
+                for i,mark  in enumerate(self.marklist):
                     if mark not in self.mark: continue
                     icol = self.mark[mark]['rank']
                     if self.ia == 1:
                         a = l[i+self.ic]
-                    elif self.ia == 2: 
+                    elif self.ia == 2:
                         a = self.tbase012(l[i+self.ic],mark)
                     elif self.ia == 3:
                         a = self.tbase012(l[i*2+self.ic]+l[i*2+1+self.ic],mark)
@@ -163,13 +170,13 @@ class SNP(object):
                 if line.startswith('#'): continue
                 l = line.strip().split()
                 if len(l) == 0: continue
-                if len(l) > 5: chrom,name,distance,position,a1,a2 = l[:6]
+                if len(l) == 6: chrom,name,distance,position,a1,a2 = l
                 elif len(l) == 4:
                     chrom,name,distance,position = l # Plink
                     a1,a2 = [],[]
                 elif len(l) == 1:
                     name = l[0]
-                    chrom,position,a1,a2 = '0',count,[],[]
+                    chrom,pos,a1,a2 = '0',count,[],[]
                 if name not in self.mark:
                     self.mark[name] = {'chrom':chrom,
                                        'pos':int(position),
@@ -179,7 +186,7 @@ class SNP(object):
                     self.marklist.append(name)
 
     def collectMarkers(self, ingeno):
-        """ 
+        """
             Reads input file to search for the necessary marker information
             If the markers are not present as a comment line on top of the file,
             it will calculate the number of markers to be the same as the number of alleles
@@ -213,148 +220,203 @@ class SNP(object):
                                            'rank':i}
                         self.marklist.append(str(i))
 
-#*****************************************************************************************************
+#**************************************************************************************
 
-    def findDiscords(self,anim,sire,dam):
-        """ 
-            Detects all mendelian discords within the given trio
-            Will work even if one of the parents is missing
-        """
-        # Father
-        try:
-            res = self.gen[self.ped[sire]['rank'],:]*self.gen[self.ped[anim]['rank'],:]
-            wrongP = res==-1
-        except KeyError:
-            wrongP = [False]*len(self.mark)
-        # Mother
-        try:
-            res = self.gen[self.ped[dam]['rank'],:]*self.gen[self.ped[anim]['rank'],:]
-            wrongM = res==-1
-        except KeyError:
-            wrongM = [False]*len(self.mark)
-        # Trios
-        try:
-            res = self.gen[self.ped[sire]['rank'],:]*self.gen[self.ped[dam]['rank'],:] - (self.gen[self.ped[anim]['rank'],:]*self.gen[self.ped[anim]['rank'],:])
-            wrongT = res==1
-        except KeyError:
-            wrongT = [False]*len(self.mark)
-        return np.logical_or(np.logical_or(wrongP,wrongM),wrongT),wrongP,wrongM,wrongT
+    def check3(self,obs):
+        est = np.array([0.25,0.5,0.25])*sum(obs)
+        res = sum(np.power(obs-est,2)/est)
+        return res
 
-    def correctMendel(self):
-        """ 
-            Checks for mendelian discords and sets all conflicting alleles to missing
-            It is possible the deletion could be handled more intelligently.
-        """
-        self.gen -= 1
-        self.disc = np.zeros((len(self.ped),len(self.mark)))
-        one = np.ones((1,len(self.mark)))
-        for child in self.pedlist:
-            father = self.ped[child]['father']
-            mother = self.ped[child]['mother']
-            index,indP,indM,indT = self.findDiscords(child,father,mother)
-            self.disc[self.ped[child]['rank'],index] += 1
-            if father in self.ped:
-                self.disc[self.ped[father]['rank'],indP] += 1
-            if mother in self.ped:
-                self.disc[self.ped[mother]['rank'],indM] += 1
-        self.gen[self.disc>0] = np.nan
-        self.gen += 1
+    def check2(self,obs):
+        est = np.array([0.5,0.5])*sum(obs)
+        res = sum(np.power(obs-est,2)/est)
+        return res
 
-    def calcMAF(self,maffile):
-        """ 
-            Calculates statistics on allele distribution, MAF and error percentage for all markers
-        """
-        with open(maffile,'w') as fout:
-            fout.write('#SNP\tMAF\ta0\ta1\ta2\tan\terr\tadjErr\n')
-            for n in self.marklist:
-                i = self.mark[n]['rank']
-                d = self.gen[:,i]
-                ind = np.isfinite(d)
-                try:
-                    MAF = sum(d[ind])/(2*(len(d[ind])))
-                except ZeroDivisionError:
-                    MAF = np.nan
-                a0,a1,a2,an = len(d[d==0]),len(d[d==1]),len(d[d==2]),len(d[np.isnan(d)])
-                if MAF>0.5: MAF = 1-MAF
-                if len(d[ind]) > 0:
-                    err = sum(self.disc[:,i])/(len(d[ind])+sum(self.disc[:,i]))
+    def check1(self,obs):
+        res = -1*np.log(np.power(0.5,obs))
+        return res
+
+    def calcStat(self,obs):
+        res = {}
+        indO = obs>0
+        if sum(indO) == 3:
+            val = self.check3(obs)
+            res['11'] = val
+            if val < 9.210: return res # 1:2:1 distribution at alpha == 0.01, v==2
+            return {'nan':9999}
+            if obs[0] < obs[2]:
+                val = self.check2(obs[1:3])
+                res['12'] = val
+            else:
+                val = self.check2(obs[0:2])
+                res['01'] = val
+            if val < 6.635: return res
+            maxind = np.argmax(obs)
+            val = self.check1(obs[maxind])
+            if maxind == 0: res['00'] = val
+            elif maxind == 1: res['02'] = val
+            else: res['22'] = val
+            return res
+        if sum(indO) == 2:
+            val = self.check2(obs[indO])
+            if obs[0] < obs[2]: res['12'] = val
+            else: res['01'] = val
+            if val < 6.635: return res # 1:1 distribution at alpha == 0.01, v==1
+            return {'nan':9999}
+            val = self.check3(obs)
+            res['11'] = val
+            if val < 9.210: return res # 1:2:1 distribution at alpha == 0.01, v==2
+            maxind = np.argmax(obs)
+            val = self.check1(obs[maxind])
+            if maxind == 0: res['00'] = val
+            elif maxind == 1: res['02'] = val
+            else: res['22'] = val
+            return res
+        if sum(indO) == 1:
+            val = self.check1(obs[indO])
+            if obs[0] > 0: res['00'] = val
+            elif obs[1] > 0: res['02'] = val
+            else: res['22'] = val
+            return res # 1 distribution at probability p = 0.01
+        return res
+
+    def getfathers(self):
+        self.fathers = {}
+        self.mothers = {}
+        for animal in self.pedlist:
+            father,mother = self.ped[animal]['father'],self.ped[animal]['mother']
+            if father == '0' or mother == '0':
+                continue
+            if father not in self.fathers:
+                self.fathers[father] = {}
+                self.fathers[father][mother] = [self.ped[animal]['rank']]
+            elif mother not in self.fathers[father]:
+                self.fathers[father][mother] = [self.ped[animal]['rank']]
+            else:
+                self.fathers[father][mother].append(self.ped[animal]['rank'])
+            if mother not in self.mothers:
+                self.mothers[mother] = {}
+                self.mothers[mother][father] = [self.ped[animal]['rank']]
+            elif father not in self.mothers[mother]:
+                self.mothers[mother][father] = [self.ped[animal]['rank']]
+            else:
+                self.mothers[mother][father].append(self.ped[animal]['rank'])
+
+    def inferAlleles(self,reportfile,logfile):
+        #self.simulate(10,10)
+        self.getfathers()
+        fout = open(reportfile,'w')
+        flog = open(logfile,'w')
+        missing = {}
+        flog.write('marker\tfather\tmother\tEstGeno\tstatistic\tObsGeno\ta0\ta1\ta2\n')
+        for marker in self.marklist:
+            fathrec = {}
+            mothrec = {}
+            genos = {}
+            icol = self.mark[marker]['rank']
+            for father in self.fathers:
+                fathrec[father] = {'0':0,'1':0,'2':0,'rep':0}
+                af = np.nan
+                for mother in self.fathers[father]:
+                    if mother not in mothrec: 
+                        mothrec[mother] = {'0':0,'1':0,'2':0,'rep':0}
+                    ind = self.fathers[father][mother]
+                    gentyp = self.gen[ind,icol]
+                    a0 = len(gentyp[gentyp==0])*1.0
+                    a1 = len(gentyp[gentyp==1])*1.0
+                    a2 = len(gentyp[gentyp==2])*1.0
+                    stat = self.calcStat(np.array([a0,a1,a2]))
+                    am = np.nan
+                    # Prints all checked possibilities key=genotype, 
+                    # stat[key] is the statistic for that genotype
+                    for key in stat:
+                        if stat[key] > 999:
+                            continue
+                        flog.write('%s\t%s\t%s\t%s\t%s\t%s%s\t%s\t%s\t%s\n' \
+                                % (marker,father,mother,key,stat[key],af,am,a0,a1,a2))
+                        genos[father,mother] = key
+                        fathrec[father]['rep'] += 1
+                        mothrec[mother]['rep'] += 1
+                        if '0' in key:
+                            fathrec[father]['0'] += 1
+                            mothrec[mother]['0'] += 1
+                        if '1' in key:
+                            fathrec[father]['1'] += 1
+                            mothrec[mother]['1'] += 1
+                        if '2' in key:
+                            fathrec[father]['2'] += 1
+                            mothrec[mother]['2'] += 1
+            for father in fathrec:
+                a0 = fathrec[father]['0']
+                a1 = fathrec[father]['1']
+                a2 = fathrec[father]['2']
+                r = fathrec[father]['rep']
+                if r < 2: continue # only do assignment if the parent is present in 2 or more matings
+                if a0 == r and a0>a1 and a0>a2:
+                    a = '0'
+                elif a1 == r and a1>a0 and a1>a2:
+                    a = '1'
+                elif a2 == r and a2>a0 and a2>a1:
+                    a = '2'
                 else:
-                    err = 0
-                if MAF > 0:
-                    relerr = err / (MAF+MAF+MAF*MAF)
-                else:
-                    relerr = err
-                fout.write('%s\t%.5f\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n' % (n,MAF,a0,a1,a2,an,err,relerr))
-
-    def calcDist(self,maffile):
-        """ 
-            Calculates statistics on allele distribution and error percentage for the samples
-        """
-        with open(maffile,'a') as fout:
-            fout.write('#Sample\tx\ta0\ta1\ta2\tan\terr\tadjErr\n')
-            for n in self.pedlist:
-                i = self.ped[n]['rank']
-                d = self.gen[i,:]
-                ind = np.isfinite(d)
-                a0,a1,a2,an = len(d[d==0]),len(d[d==1]),len(d[d==2]),len(d[np.isnan(d)])
-                if len(d[ind]) > 0:
-                    err = sum(self.disc[i,:])/(len(d[ind])+sum(self.disc[i,:]))
-                else:
-                    err = 0
-                MAF = 0
-                relerr = err
-                fout.write('%s\t%d\t%d\t%d\t%d\t%d\t%.3f\t%.3f\n' % (n,MAF,a0,a1,a2,an,err,relerr))
-
-    def writeGeno(self,infile,outfile):
-        """ 
-            Writes corrected genotypes to the outputfile in the same format as the input files
-            The information columns (specified by the -c parameter) are re-read from the input file
-        """
-            
-        def trans1(a):
-            if a == 0: return '0'
-            if a == 1: return '1'
-            if a == 2: return '2'
-            return '-1'
-
-        def trans2(a,m):
-            if a == 0: return m[0]+m[0]
-            if a == 1: return m[0]+m[1]
-            if a == 2: return m[1]+m[1]
-            return '00'
-
-        def trans3(a,m):
-            if a == 0: return m[0]+self.sep+m[0]
-            if a == 1: return m[0]+self.sep+m[1]
-            if a == 2: return m[1]+self.sep+m[1]
-            return '0'+self.sep+'0'
-        
-        with open(infile,'r') as fin:
-            fout = open(outfile,'w')
-            mlist = [''.join(self.mark[m]['alleles']) for m in self.marklist]
-            #for e in zip(mlist,self.marklist):
-            #    if len(e[0]) <2:
-            #        print(e)
-            for line in fin:
-                if line.startswith('#'):
-                    fout.write('#\t%s\n' % '\t'.join(mlist))
+                    a = 'nan'
                     continue
-                l = line.strip().split()
-                fout.write('%s' % self.sep.join(l[0:self.ic]))
-                child = l[self.nc]
-                if self.ia == 1:
-                    fout.write('\t%s\n' % self.sep.join([trans1(g) for g in self.gen[self.ped[child]['rank'],:]]))
-                elif self.ia == 2:
-                    fout.write('\t%s\n' % self.sep.join([trans2(g,mark) for g,mark in zip(self.gen[self.ped[child]['rank'],:],mlist)]))
-                elif self.ia == 3:
-                    fout.write('\t%s\n' % self.sep.join([trans3(g,mark) for g,mark in zip(self.gen[self.ped[child]['rank'],:],mlist)]))
-            fout.close()
+                fout.write('%s\t%s\t%s\t%s\n' % (marker,father,a,'M'))
+                for mother in self.fathers[father]:
+                    try:
+                        g = genos[father,mother]
+                    except KeyError:
+                        continue
+                    b = g.replace(a,'',1)
+                    fout.write('%s\t%s\t%s\t%s\n' % (marker,mother,b,'F'))
+            for mother in mothrec:
+                a0 = mothrec[mother]['0']
+                a1 = mothrec[mother]['1']
+                a2 = mothrec[mother]['2']
+                r = mothrec[mother]['rep']
+                if r < 2: continue
+                if a0 == r and a0>a1 and a0>a2:
+                    a = '0'
+                elif a1 == r and a1>a0 and a1>a2:
+                    a = '1'
+                elif a2 == r and a2>a0 and a2>a1:
+                    a = '2'
+                else:
+                    a = 'nan'
+                    continue
+                fout.write('%s\t%s\t%s\t%s\n' % (marker,mother,a,'F'))
+                for father in self.mothers[mother]:
+                    try: g = genos[father,mother]
+                    except KeyError: continue
+                    b = g.replace(a,'',1)
+                    fout.write('%s\t%s\t%s\t%s\n' % (marker,father,b,'M'))
+        fout.close()
+        flog.close()
 
+def simulate(N,n):
+    count1 = 0
+    count2 = 0
+    for i in xrange(N):
+        res1 = [0,0,0]
+        res2 = [0,0]
+        for j in xrange(n):
+            r = random.random()
+            if r < 0.25: res1[0] += 1
+            elif r < 0.75: res1[1] += 1
+            else: res1[2] += 1
+            if r < 0.5: res2[0] += 1
+            else: res2[1] += 1
+        if res1[0] < 5 or res1[2] < 5:
+            count1 += 1
+        if abs(res2[0]-res2[1]) > 14:
+            count2 += 1 
+    print('AaxAa:%.5f\nAAxAa:%.5f' % (count1/N,count2/N))
+ 
 def main():
     parser = argparse.ArgumentParser(description='Processes genotypes.')
     parser.add_argument('ingeno',help='Input genotypes file')
-    parser.add_argument('-o', '--outgeno',help='Output genotypes file')
-    parser.add_argument('-r','--repfile',help='Output report file')
+    parser.add_argument('-o', '--outgeno',help='Output genotypes file', default='out.txt')
+    parser.add_argument('-r','--repfile',help='Output report file', default='report.txt')
     parser.add_argument('-p','--pedigree',dest='pedigreefile',help='Pedigree file',default=None)
     parser.add_argument('-m','--markers',dest='markerfile',help='Marker file')
     parser.add_argument('-n','--informat',dest='informat',help='Format of input file (Plink/DMU)')
@@ -367,18 +429,19 @@ def main():
     if args.pedigreefile:
         gen.readPedigree(args.pedigreefile)
     else:
+        print('No pedigreefile found, gathering pedigreedata from genotypefile.')
         gen.readPedigree(args.ingeno,False)
     # Collect marker information
     if args.markerfile:
         gen.readMarkers(args.markerfile)
     else:
+        print('No markerfile found, gathering markerdata from genotypefile.')
         gen.collectMarkers(args.ingeno)
     gen.readGenos(args.ingeno)
-    gen.correctMendel()
-    gen.calcMAF(args.repfile)
-    gen.calcDist(args.repfile)
-    if args.outgeno: gen.writeGeno(args.ingeno, args.outgeno)
+    gen.inferAlleles(args.repfile,args.outgeno)
     
 
 if __name__ == '__main__':
+    t = time.time()
     main()
+    sys.stdout.write('Time spent: %.3f\n' % (time.time()-t))
